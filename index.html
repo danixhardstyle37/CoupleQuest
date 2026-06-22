@@ -1,0 +1,2846 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Couple Quest</title>
+
+  <link rel="stylesheet" href="style.css">
+
+  <script type="module">
+
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
+
+    import {
+      getAuth,
+      createUserWithEmailAndPassword,
+      signInWithEmailAndPassword,
+      signOut,
+      onAuthStateChanged
+    } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
+
+    import {
+      getDatabase,
+      ref,
+      set,
+      get,
+      child,
+      onValue
+    } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
+
+    // CONFIG
+    const firebaseConfig = {
+      apiKey: "AIzaSyAThk3uVoJqtgcYTLjC0N0NEM1Oz-G3c7M",
+      authDomain: "couple-quest-web.firebaseapp.com",
+      databaseURL: "https://couple-quest-web-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "couple-quest-web",
+      storageBucket: "couple-quest-web.firebasestorage.app",
+      messagingSenderId: "1039048669984",
+      appId: "1:1039048669984:web:8b6b51e5e1e9e2d6e23545",
+      measurementId: "G-B7QSXH5D75"
+    };
+
+    // INIT
+    const app = initializeApp(firebaseConfig);
+
+    const auth = getAuth(app);
+    const db = getDatabase(app);
+
+    // UI
+    const authBox = document.getElementById("authBox");
+    const appBox = document.getElementById("appBox");
+    const loginMsg = document.getElementById("loginMsg");
+    const msg = document.getElementById("msg");
+    let userDataUnsubscribe = null;
+    let selectedRewardId = null;
+
+    const WEEKLY_CHALLENGES = [
+        { id: "weekly_steps_100k", name: "100000 steps this week", xp: 20 },
+        { id: "weekly_gym_4", name: "Go to the gym 4 times", xp: 20 },
+        { id: "weekly_home_4", name: "Do 4 Home workouts", xp: 20 },
+        { id: "weekly_no_alcohol", name: "No alcohol", xp: 20 },
+        { id: "weekly_no_sweets", name: "No sweets", xp: 20 },
+        { id: "weekly_no_fast_food", name: "No fast food", xp: 20 },
+        { id: "weekly_daily_10xp", name: "Earn at least 10 XP from Daily Challenges", xp: 20 },
+        { id: "weekly_streak_alive", name: "Keep your Daily Streak alive All week", xp: 20 },
+        { id: "weekly_train_3_row", name: "Train 3 days in a row", xp: 20 }
+    ];
+
+    const DAILY_DIFFICULTY_XP = {
+        small: 1,
+        medium: 2,
+        hard: 3
+    };
+
+    // REGISTER
+    window.register = async function () {
+      const email = emailInput.value;
+      const password = passInput.value;
+      const username = usernameInput.value.toLowerCase();
+
+      try {
+        const userCred = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCred.user;
+
+        await set(ref(db, "users/" + user.uid), {
+
+            email: user.email,
+
+            username: username,
+
+            xp: 0,
+
+            coins: 0,
+
+            rewards: {
+                available: {},
+                active: {},
+                history: {}
+            },
+            
+            customDaily: {},
+
+            customWeekly: {},
+
+            streak: 0,
+
+            weight: null,
+
+            lastStreakDate: null,
+
+            friends: [],
+
+            friendRequests: {
+                sent: {},
+                received: {}
+            },
+
+            tracking: null,
+
+            xpStats: {},
+
+            xpHistory: {}
+        });
+
+        msg.innerText = "Account created! You can now log in.";
+
+        await signOut(auth);
+
+        // small UX delay so user actually sees message
+        setTimeout(() => {
+        showLogin();
+        }, 100);
+
+      } catch (e) {
+        console.error("REGISTER ERROR:", e.code, e.message);
+        if (e.code === "auth/email-already-in-use") {
+            msg.innerText = "This email is already registered.";
+        } else if (e.code === "auth/invalid-email") {
+            msg.innerText = "Please enter a valid email.";
+        } else if (e.code === "auth/weak-password") {
+            msg.innerText = "Password must be at least 6 characters.";
+        } else if (e.code === "auth/operation-not-allowed") {
+            msg.innerText = "Email/password registration is not enabled in Firebase.";
+        } else {
+            msg.innerText = e.message;
+        }
+      }
+    };
+
+    // LOGIN
+    window.login = async function () {
+        console.log("LOGIN CLICK");
+        const input = loginInput.value;
+        const password = loginPassInput.value;
+
+      try {
+        let emailToUse = input;
+
+        // ako nije email → traži username u bazi
+        if (!input.includes("@")) {
+          const snapshot = await get(ref(db, "users"));
+
+          let foundEmail = null;
+
+          snapshot.forEach((childSnap) => {
+            let data = childSnap.val();
+
+            if (data.username === input.toLowerCase()) {
+              foundEmail = data.email;
+            }
+          });
+
+          if (!foundEmail) {
+            loginMsg.innerText = "Username not found";
+            return;
+          }
+
+          emailToUse = foundEmail;
+        }
+
+        await signInWithEmailAndPassword(auth, emailToUse, password);
+
+      } catch (e) {
+        loginMsg.innerText = e.message;
+      }
+    };
+
+    // LOGOUT
+    window.logout = async function () {
+        await signOut(auth);
+
+        registerBox.style.display = "block";
+        loginBox.style.display = "none";
+        appBox.style.display = "none";
+
+        emailInput.value = "";
+        passInput.value = "";
+        loginInput.value = "";
+        loginPassInput.value = "";
+
+        // 🔥 RESET FRIEND UI
+        document.getElementById("searchResults").innerHTML = "";
+        document.getElementById("friendRequests").innerHTML = "";
+        document.getElementById("friendsList").innerHTML = "";
+        document.getElementById("trackingBox").innerHTML = "You are not tracking any friends...";
+
+        const fitDateList = document.getElementById("fitDateList");
+        if (fitDateList) fitDateList.innerHTML = "";
+
+        const fitDateMessage = document.getElementById("fitDateMessage");
+        if (fitDateMessage) fitDateMessage.innerText = "";
+    };
+
+    function updateNotificationBadges(data) {
+        const friendsBadge = document.getElementById("friendsBadge");
+        const fitDateBadge = document.getElementById("fitDateBadge");
+
+        if (!friendsBadge || !fitDateBadge || !data) return;
+
+        const receivedRequests = data.friendRequests?.received || {};
+        const friendRequestCount = Object.keys(receivedRequests).length;
+
+        if (friendRequestCount > 0) {
+            friendsBadge.classList.remove("hidden");
+        } else {
+            friendsBadge.classList.add("hidden");
+        }
+
+        const fitDates = data.fitDates?.active || {};
+        const myUsername = data.username;
+
+        const pendingFitDateInvites = Object.values(fitDates).filter(fd => {
+            return fd.accepted && fd.accepted[myUsername] === false;
+        });
+
+        if (pendingFitDateInvites.length > 0) {
+            fitDateBadge.classList.remove("hidden");
+        } else {
+            fitDateBadge.classList.add("hidden");
+        }
+    }
+
+    // AUTH STATE
+    onAuthStateChanged(auth, async (user) => {
+
+      if (user) {
+        if (userDataUnsubscribe) {
+            userDataUnsubscribe();
+        }
+
+        userDataUnsubscribe = onValue(ref(db, "users/" + user.uid), (snapshot) => {
+            if (!snapshot.exists()) return;
+
+            const liveData = normalizeData(snapshot.val());
+            updateNotificationBadges(liveData);
+        });
+
+        registerBox.style.display = "none";
+        loginBox.style.display = "none";
+        appBox.style.display = "block";
+        const snapshot = await get(ref(db, "users/" + user.uid));
+
+        if (snapshot.exists()) {
+            let data = snapshot.val();
+
+            // 1. normalize daily FIRST
+            const today = getToday();
+
+            if (!data.daily || data.daily.date !== today) {
+                data.daily = {
+                    date: today,
+                    xp: 0,
+                    claimed: {},
+                    streakClaimed: false
+                };
+            }
+
+            data = normalizeData(data);
+
+            // 2. normalize streak
+            data = normalizeStreak(data);
+
+            data = normalizeWeekly(data);
+
+            // 3. SAVE FIXED STATE
+            await set(ref(db, "users/" + user.uid), data);
+
+            // 4. UI
+            updateUI(data);
+            loadFriendData(data);
+            updateDailyButtons(data);
+            renderCustomDailyChallenges(data);
+            updateWeeklyUI(data);
+            loadFitDateFriends(data);
+            updateFitDateUI();
+            updateRewardsUI(data);
+
+        document.getElementById("gymBtn").disabled = false;
+        document.getElementById("waterBtn").disabled = false;
+
+          if (data.daily && data.daily.date === today) {
+
+            if (data.daily.claimed?.gym) {
+                document.getElementById("gymBtn").disabled = true;
+            }
+
+            if (data.daily.claimed?.water) {
+                document.getElementById("waterBtn").disabled = true;
+            }
+          }
+
+          document.getElementById("profileName").innerText = data.username;
+          updateUI(data);
+
+        }
+
+      } else {
+        registerBox.style.display = "block";
+        loginBox.style.display = "none";
+        appBox.style.display = "none";
+
+        if (userDataUnsubscribe) {
+            userDataUnsubscribe();
+            userDataUnsubscribe = null;
+        }
+      }
+    });
+
+    window.openProfile = async function () {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const snap = await get(ref(db, "users/" + user.uid));
+
+        if (!snap.exists()) return;
+
+        const me = snap.val();
+
+        document.getElementById("modalUsername").innerText = me.username;
+        document.getElementById("modalXP").innerText = me.xp || 0;
+        document.getElementById("modalStreak").innerText = me.streak || 0;
+
+        document.getElementById("modalLevel").innerText = getLevelInfo(me.xp || 0).level;
+
+        renderXPBreakdown(me);
+
+        document.getElementById("profileModal").classList.add("show");
+    };
+
+    window.showLogin = function () {
+        msg.innerText = "";
+        loginMsg.innerText = "";
+
+        registerBox.style.display = "none";
+        loginBox.style.display = "block";
+    }
+
+    window.showRegister = function () {
+        msg.innerText = "";
+        loginMsg.innerText = "";
+
+        loginBox.style.display = "none";
+        registerBox.style.display = "block";
+    }
+
+    window.openTab = async function(tabName) {
+        document.querySelectorAll(".tab-page").forEach(page => {
+            page.classList.add("hidden");
+        });
+
+        const activePage = document.getElementById("tab-" + tabName);
+        if (activePage) activePage.classList.remove("hidden");
+
+        document.querySelectorAll(".tab").forEach(btn => {
+            btn.classList.remove("active");
+        });
+
+        const activeBtn = document.querySelector(`[data-tab="${tabName}"]`);
+        if (activeBtn) activeBtn.classList.add("active");
+
+        // 🔥 DODAJ OVO:
+        if (tabName === "friends") {
+            const friendsBadge = document.getElementById("friendsBadge");
+            if (friendsBadge) friendsBadge.classList.add("hidden");
+
+            const user = auth.currentUser;
+            if (!user) return;
+
+            const snap = await get(ref(db, "users/" + user.uid));
+            if (snap.exists()) {
+                loadFriendData(snap.val());
+            }
+        }
+
+        if (tabName === "weekly") {
+            const user = auth.currentUser;
+            if (!user) return;
+
+            const snap = await get(ref(db, "users/" + user.uid));
+
+            if (snap.exists()) {
+                let data = normalizeData(snap.val());
+                data = normalizeWeekly(data);
+
+                await set(ref(db, "users/" + user.uid), data);
+
+                updateWeeklyUI(data);
+            }
+        }
+
+        if (tabName === "home") {
+            const user = auth.currentUser;
+            if (!user) return;
+
+            const snap = await get(ref(db, "users/" + user.uid));
+
+            if (snap.exists()) {
+                let data = normalizeData(snap.val());
+                data = normalizeWeekly(data);
+
+                updateUI(data);
+                updateTrackingUI(data);
+            }
+        }
+
+        if (tabName === "fitdate") {
+            const fitDateBadge = document.getElementById("fitDateBadge");
+            if (fitDateBadge) fitDateBadge.classList.add("hidden");
+
+            const user = auth.currentUser;
+            if (!user) return;
+
+            const snap = await get(ref(db, "users/" + user.uid));
+
+            if (snap.exists()) {
+                let data = normalizeData(snap.val());
+                await set(ref(db, "users/" + user.uid), data);
+
+                loadFitDateFriends(data);
+                await updateFitDateUI();
+            }
+        }
+
+        if (tabName === "rewards") {
+            const user = auth.currentUser;
+            if (!user) return;
+
+            const snap = await get(ref(db, "users/" + user.uid));
+
+            if (snap.exists()) {
+                let data = normalizeData(snap.val());
+                await set(ref(db, "users/" + user.uid), data);
+
+                updateUI(data);
+                updateRewardsUI(data);
+            }
+        }
+
+        if (tabName === "daily") {
+            const user = auth.currentUser;
+            if (!user) return;
+
+            const snap = await get(ref(db, "users/" + user.uid));
+
+            if (snap.exists()) {
+                let data = normalizeData(snap.val());
+
+                await set(ref(db, "users/" + user.uid), data);
+
+                updateDailyButtons(data);
+                renderCustomDailyChallenges(data);
+            }
+        }
+    };
+
+    function getToday() {
+        const now = new Date();
+        const reset = new Date();
+
+        reset.setHours(8,0,0,0);
+
+        if (now < reset) {
+            reset.setDate(reset.getDate() - 1);
+        }
+
+        return reset.toISOString().split("T")[0];
+    }
+
+    window.openAddDailyModal = function () {
+        document.getElementById("customDailyName").value = "";
+        document.getElementById("customDailyDifficulty").value = "small";
+        document.getElementById("addDailyMessage").innerText = "";
+
+        document.getElementById("addDailyModal").classList.add("show");
+    };
+
+    window.closeAddDailyModal = function () {
+        document.getElementById("customDailyName").value = "";
+        document.getElementById("customDailyDifficulty").value = "small";
+        document.getElementById("addDailyMessage").innerText = "";
+
+        document.getElementById("addDailyModal").classList.remove("show");
+    };  
+
+    function getDailyDifficultyLabel(difficulty) {
+        if (difficulty === "small") return "Small";
+        if (difficulty === "medium") return "Medium";
+        if (difficulty === "hard") return "Hard";
+        return "Daily";
+    }
+
+    function renderCustomDailyChallenges(data) {
+        const list = document.getElementById("customDailyList");
+        if (!list) return;
+
+        const customDaily = data.customDaily || {};
+        const claimed = data.daily?.claimed || {};
+
+        list.innerHTML = "";
+
+        Object.values(customDaily)
+            .sort((a, b) => a.xp - b.xp)
+            .forEach(challenge => {
+                const row = document.createElement("div");
+                row.className = "challenge-row custom-daily-row";
+
+                row.innerHTML = `
+                    <div class="challenge-info">
+                        <h3>${challenge.name}</h3>
+                        <p>${getDailyDifficultyLabel(challenge.difficulty)} · +${challenge.xp} XP</p>
+                    </div>
+
+                    <button 
+                        onclick="claim('${challenge.id}', ${challenge.xp}, '${challenge.name}')"
+                        ${claimed[challenge.id] ? "disabled" : ""}
+                    >
+                        Claim
+                    </button>
+                `;
+
+                list.appendChild(row);
+            });
+    }
+
+    window.addCustomDailyChallenge = async function () {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const nameInput = document.getElementById("customDailyName");
+        const difficultyInput = document.getElementById("customDailyDifficulty");
+        const message = document.getElementById("addDailyMessage");
+
+        const name = cleanText(nameInput.value);
+        const difficulty = difficultyInput.value;
+        const xp = DAILY_DIFFICULTY_XP[difficulty];
+
+        if (!name) {
+            message.innerText = "Please enter a challenge name.";
+            return;
+        }
+
+        const userRef = ref(db, "users/" + user.uid);
+        const snap = await get(userRef);
+
+        if (!snap.exists()) return;
+
+        let data = normalizeData(snap.val());
+
+        const id = "custom_daily_" + Date.now();
+
+        data.customDaily[id] = {
+            id,
+            name,
+            difficulty,
+            xp,
+            custom: true
+        };
+
+        await set(userRef, data);
+
+        renderCustomDailyChallenges(data);
+
+        message.innerText = "Daily challenge added ✅";
+
+        setTimeout(() => {
+            closeAddDailyModal();
+        }, 500);
+    };
+
+    window.claim = async function(type, xp, missionName = "") {
+
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const userRef = ref(db, "users/" + user.uid);
+        const snapshot = await get(userRef);
+        let data = snapshot.val();
+
+        // 1. normalize daily FIRST
+        const today = getToday();
+
+        if (!data.daily || data.daily.date !== today) {
+            data.daily = {
+                date: today,
+                xp: 0,
+                claimed: {},
+                streakClaimed: false
+            };
+        }
+        
+        data = normalizeData(data);
+
+        // 2. normalize streak
+        data = normalizeStreak(data);
+
+        // 3. SAVE FIXED STATE
+        await set(ref(db, "users/" + user.uid), data);
+
+        // 4. UI
+        updateUI(data);
+        updateDailyButtons(data);
+        renderCustomDailyChallenges(data);
+        updateTrackingUI(data);
+
+        // already claimed?
+        if (data.daily.claimed[type]) return;
+
+        const mission = createMission(
+
+            type,
+
+            missionName,
+
+            "daily",
+
+            xp
+
+        );
+
+        await awardXP(data, mission);
+
+        data.daily.xp = (data.daily.xp || 0) + xp;
+
+        data.daily.claimed[type] = true;
+
+        // streak check
+        if ((data.daily.xp || 0) >= 3 && !data.daily.streakClaimed) {
+            data.streak = (data.streak || 0) + 1;
+            data.daily.streakClaimed = true;
+            data.lastStreakDate = getToday();
+        }
+        await set(userRef, data);
+        updateUI(data);
+        updateDailyButtons(data);
+        renderCustomDailyChallenges(data);
+        updateTrackingUI(data);
+
+    };
+
+    function spendXP(data, amount, reason){
+
+        return awardXP(data,{
+
+            id:reason,
+
+            name:reason,
+
+            type:"system",
+
+            xp:-amount
+
+        });
+
+    }
+
+    function shouldReset(lastReset) {
+        const now = new Date();
+        const resetTime = new Date();
+
+        resetTime.setHours(8,0,0,0);
+
+        if (now < resetTime) {
+            resetTime.setDate(resetTime.getDate() - 1);
+        }
+
+        return !lastReset || new Date(lastReset) < resetTime;
+    }
+
+    window.addEventListener("load", () => {
+        openTab("home");
+    });
+
+    function getLevelInfo(totalXP) {
+        const xp = Math.max(totalXP || 0, 0);
+
+        const level = Math.floor(xp / 100) + 1;
+        const currentLevelStart = (level - 1) * 100;
+        const nextLevelXP = level * 100;
+        const xpInLevel = xp - currentLevelStart;
+        const neededForLevel = 100;
+
+        return {
+            level,
+            currentLevelStart,
+            nextLevelXP,
+            xpInLevel,
+            neededForLevel,
+            percent: Math.min((xpInLevel / neededForLevel) * 100, 100)
+        };
+    }
+
+    function updateUI(data) {
+        const xp = data.xp || 0;
+        const levelInfo = getLevelInfo(xp);
+
+        document.getElementById("userXP").innerText = xp;
+        document.getElementById("xpText").innerText =
+            `${levelInfo.xpInLevel} / ${levelInfo.neededForLevel} XP`;
+
+        document.getElementById("levelText").innerText =
+            `LEVEL ${levelInfo.level}`;
+
+        document.getElementById("streak").innerText = data.streak || 0;
+        document.getElementById("progressFill").style.width = levelInfo.percent + "%";
+
+        const coinsEl = document.getElementById("userCoins");
+        if (coinsEl) coinsEl.innerText = data.coins || 0;
+    }
+
+    function updateDailyButtons(data) {
+        const today = getToday();
+
+        const claimed = data.daily?.claimed || {};
+
+        document.getElementById("gymBtn").disabled = !!claimed.gym;
+        document.getElementById("waterBtn").disabled = !!claimed.water;
+        document.getElementById("stepsBtn").disabled = !!claimed.steps;
+        document.getElementById("homeBtn").disabled = !!claimed.home;
+        document.getElementById("sweetsBtn").disabled = !!claimed.sweets;
+        document.getElementById("sleepBtn").disabled = !!claimed.sleep;
+    }
+
+    function updateStreakOnLogin(data) {
+        const today = new Date(getToday());
+        const last = data.lastStreakDate ? new Date(data.lastStreakDate) : null;
+
+        if (!last) return data; // nikad nije imao streak
+
+        const diffDays = Math.floor((today - last) / (1000 * 60 * 60 * 24));
+
+        if (diffDays === 0) {
+            // već je danas validan → ništa
+            return data;
+        }
+
+        if (diffDays === 1) {
+            // ok, nastavlja se streak
+            return data;
+        }
+
+        if (diffDays > 1) {
+            // 🔥 propustio dan → reset
+            data.streak = 0;
+            return data;
+        }
+
+        return data;
+    }
+    function normalizeStreak(data) {
+        const today = new Date(getToday());
+        const last = data.lastStreakDate ? new Date(data.lastStreakDate) : null;
+
+        if (!last) {
+            data.streak = 0;
+            return data;
+        }
+
+        const diffDays = Math.floor((today - last) / (1000 * 60 * 60 * 24));
+
+        if (diffDays === 0) {
+            // sve OK
+            return data;
+        }
+
+        if (diffDays === 1) {
+            // još uvijek validan streak chain
+            return data;
+        }
+
+        // 🔥 2+ dana bez aktivnosti → reset
+        data.streak = 0;
+        data.lastStreakDate = null;
+
+        return data;
+    }
+
+    const DEFAULT_REWARDS = [
+        {
+            id: "reward_cinema",
+            name: "Cinema Date",
+            category: "small",
+            cost: 75
+        },
+        {
+            id: "reward_restaurant",
+            name: "Restaurant of Choice",
+            category: "medium",
+            cost: 150
+        },
+        {
+            id: "reward_weekend_getaway",
+            name: "Weekend Getaway",
+            category: "large",
+            cost: 250
+        }
+    ];
+
+    const REWARD_CATEGORY_COSTS = {
+        small: 75,
+        medium: 150,
+        large: 250
+    };
+
+    function seedDefaultRewards(data) {
+        if (!data.rewards) {
+            data.rewards = {
+                available: {},
+                active: {},
+                history: {}
+            };
+        }
+
+        if (!data.rewards.available) data.rewards.available = {};
+
+        DEFAULT_REWARDS.forEach(reward => {
+            if (!data.rewards.available[reward.id]) {
+                data.rewards.available[reward.id] = reward;
+            }
+        });
+    }
+
+    function normalizeData(data) {
+        const today = getToday();
+
+        if (!data.daily) {
+            data.daily = {
+                date: today,
+                xp: 0,
+                claimed: {},
+                streakClaimed: false
+            };
+        }
+
+        if (!data.daily.claimed) {
+            data.daily.claimed = {};
+        }
+
+        if (typeof data.xp !== "number") data.xp = 0;
+        if (typeof data.streak !== "number") data.streak = 0;
+
+        if (!data.xpStats) {
+            data.xpStats = {};
+        }
+
+        if (!data.xpHistory) {
+            data.xpHistory = {};
+        }
+
+        if (!data.weekly) {
+            data.weekly = {
+                active: null,
+                history: {}
+            };
+        }
+
+        if (!data.weekly.history) {
+            data.weekly.history = {};
+        }
+
+        if (!data.fitDates) {
+            data.fitDates = {
+                active: {},
+                history: {}
+            };
+        }
+
+        if (!data.fitDates.active) {
+            data.fitDates.active = {};
+        }
+
+        if (!data.fitDates.history) {
+            data.fitDates.history = {};
+        }
+
+        if (typeof data.coins !== "number") {
+            data.coins = 0;
+        }
+
+        if (!data.rewards) {
+            data.rewards = {
+                available: {},
+                active: {},
+                history: {}
+            };
+        }
+
+        if (!data.rewards.available) data.rewards.available = {};
+        if (!data.rewards.active) data.rewards.active = {};
+        if (!data.rewards.history) data.rewards.history = {};
+
+        seedDefaultRewards(data);
+
+        if (!data.customDaily) {
+            data.customDaily = {};
+        }
+
+        if (!data.customWeekly) {
+            data.customWeekly = {};
+        }
+
+        return data;
+    }
+
+    function updateXPStats(data, mission) {
+
+        if (!data.xpStats) {
+            data.xpStats = {};
+        }
+
+        if (!data.xpStats[mission.id]) {
+
+            data.xpStats[mission.id] = {
+
+                name: mission.name,
+
+                type: mission.type,
+
+                earned: 0,
+
+                spent: 0
+            };
+        }
+
+        if (mission.xp >= 0) {
+
+            data.xpStats[mission.id].earned += mission.xp;
+
+        } else {
+
+            data.xpStats[mission.id].spent += Math.abs(mission.xp);
+
+        }
+    }
+
+    function addXPHistory(data, mission) {
+
+        if (!data.xpHistory) {
+            data.xpHistory = {};
+        }
+
+        const id = Date.now().toString();
+
+        data.xpHistory[id] = {
+
+            missionId: mission.id,
+
+            name: mission.name,
+
+            type: mission.type,
+
+            xp: mission.xp,
+
+            date: getToday()
+
+        };
+    }
+
+    async function awardXP(data, mission) {
+
+        data.xp = (data.xp || 0) + mission.xp;
+
+        if (mission.xp > 0) {
+            data.coins = (data.coins || 0) + mission.xp;
+        }
+
+        updateXPStats(data, mission);
+
+        addXPHistory(data, mission);
+
+        return data;
+    }
+
+    function createMission(id, name, type, xp){
+
+        return{
+
+            id,
+
+            name,
+
+            type,
+
+            xp
+
+        };
+
+    }
+
+    function getDaysSince(dateString) {
+        const start = new Date(dateString);
+        const today = new Date(getToday());
+
+        return Math.floor((today - start) / (1000 * 60 * 60 * 24));
+    }
+
+    function getWeeklyChallengePool(data) {
+        const customWeekly = Object.values(data.customWeekly || {});
+
+        return [
+            ...WEEKLY_CHALLENGES,
+            ...customWeekly
+        ];
+    }
+
+    function getRandomWeeklyChallenge(data, excludeId = null) {
+        const pool = getWeeklyChallengePool(data);
+        const available = pool.filter(ch => ch.id !== excludeId);
+
+        return available[Math.floor(Math.random() * available.length)];
+    }
+
+    function normalizeWeekly(data) {
+        if (!data.weekly) {
+            data.weekly = {
+                active: null,
+                history: {}
+            };
+        }
+
+        if (!data.weekly.history) {
+            data.weekly.history = {};
+        }
+
+        const active = data.weekly.active;
+
+        if (active && active.status === "active") {
+            const daysPassed = getDaysSince(active.startedAt);
+
+            if (daysPassed >= 7) {
+                const historyId = Date.now().toString();
+
+                data.weekly.history[historyId] = {
+                    ...active,
+                    status: "auto_give_up",
+                    endedAt: getToday(),
+                    earnedXp: 0
+                };
+
+                data.weekly.active = null;
+            }
+        }
+
+        return data;
+    }
+
+    async function saveWeeklyData(data) {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        await set(ref(db, "users/" + user.uid), data);
+    }
+
+    window.searchUser = async function () {
+        const input = friendSearchInput.value.toLowerCase();
+        const snap = await get(ref(db, "users"));
+
+        searchResults.innerHTML = "";
+
+        snap.forEach(child => {
+            const user = child.val();
+
+            if (user.username === input) {
+            const div = document.createElement("div");
+
+            div.innerHTML = `
+                <p>${user.username} (${user.xp} XP)</p>
+                <button onclick="sendFriendRequest('${user.username}')">Add Friend</button>
+            `;
+
+            searchResults.appendChild(div);
+            }
+        });
+    };
+
+    function updateWeeklyUI(data) {
+        const box = document.getElementById("weeklyChallengeBox");
+        const spinBtn = document.getElementById("spinWeeklyBtn");
+        const rerollBtn = document.getElementById("rerollWeeklyBtn");
+        const message = document.getElementById("weeklyMessage");
+
+        if (!box || !spinBtn || !rerollBtn || !message) return;
+
+        data = normalizeWeekly(data);
+
+        const active = data.weekly?.active;
+
+        message.innerText = "";
+
+        if (!active) {
+            box.innerHTML = "";
+            spinBtn.disabled = false;
+            spinBtn.innerText = "Spin";
+            rerollBtn.classList.add("hidden");
+            return;
+        }
+
+        const daysPassed = getDaysSince(active.startedAt);
+        const canFinish = daysPassed >= 6 && daysPassed < 7;
+        const daysLeft = Math.max(6 - daysPassed, 0);
+
+        spinBtn.disabled = true;
+        spinBtn.innerText = "Challenge active";
+        rerollBtn.classList.remove("hidden");
+
+        box.innerHTML = `
+            <div class="weekly-active-card">
+                <div class="weekly-tag">ACTIVE WEEKLY</div>
+
+                <h3>${active.name}</h3>
+                <p class="weekly-xp">+${active.xp} XP</p>
+
+                <p class="weekly-timer">
+                    ${
+                        canFinish
+                        ? "You can now finish this challenge."
+                        : `${daysLeft} day${daysLeft === 1 ? "" : "s"} left until claim/give up.`
+                    }
+                </p>
+
+                <div class="weekly-actions">
+                    <button onclick="claimWeeklyChallenge()" ${canFinish ? "" : "disabled"}>
+                        Claim +20 XP
+                    </button>
+
+                    <button class="giveup-btn" onclick="giveUpWeeklyChallenge()" ${canFinish ? "" : "disabled"}>
+                        Give up
+                    </button>
+                </div>
+            </div>
+        `;
+    }
+
+    window.spinWeeklyChallenge = async function () {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const userRef = ref(db, "users/" + user.uid);
+        const snap = await get(userRef);
+        let data = normalizeData(snap.val());
+        data = normalizeWeekly(data);
+
+        if (data.weekly.active) return;
+
+        const roulette = document.getElementById("weeklyRoulette");
+        const text = document.getElementById("rouletteText");
+        const message = document.getElementById("weeklyMessage");
+
+        roulette.classList.add("spinning");
+        message.innerText = "Spinning...";
+
+        let counter = 0;
+
+        const interval = setInterval(() => {
+            const pool = getWeeklyChallengePool(data);
+            const random = pool[Math.floor(Math.random() * pool.length)];
+            text.innerText = random.name;
+            counter++;
+        }, 90);
+
+        setTimeout(async () => {
+            clearInterval(interval);
+
+            const challenge = getRandomWeeklyChallenge(data);
+
+            data.weekly.active = {
+                id: challenge.id,
+                name: challenge.name,
+                xp: challenge.xp,
+                type: "weekly",
+                status: "active",
+                startedAt: getToday()
+            };
+
+            text.innerText = challenge.name;
+            roulette.classList.remove("spinning");
+
+            await set(userRef, data);
+
+            message.innerText = "Weekly challenge unlocked!";
+            updateWeeklyUI(data);
+
+        }, 1800);
+    };
+
+    window.rerollWeeklyChallenge = async function () {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const userRef = ref(db, "users/" + user.uid);
+        const snap = await get(userRef);
+        let data = normalizeData(snap.val());
+        data = normalizeWeekly(data);
+
+        if (!data.weekly.active) return;
+
+        if ((data.xp || 0) < 5) {
+            document.getElementById("weeklyMessage").innerText = "You need at least 5 XP to reroll.";
+            return;
+        }
+
+        const oldChallenge = data.weekly.active;
+
+        await awardXP(data, {
+            id: "weekly_reroll",
+            name: "Weekly Reroll",
+            type: "system",
+            xp: -5
+        });
+
+        const newChallenge = getRandomWeeklyChallenge(data, oldChallenge.id);
+
+        data.weekly.active = {
+            id: newChallenge.id,
+            name: newChallenge.name,
+            xp: newChallenge.xp,
+            type: "weekly",
+            status: "active",
+            startedAt: getToday()
+        };
+
+        await set(userRef, data);
+
+        document.getElementById("rouletteText").innerText = newChallenge.name;
+        document.getElementById("weeklyMessage").innerText = "Rerolled for -5 XP.";
+        updateUI(data);
+        updateWeeklyUI(data);
+        updateTrackingUI(data);
+    };
+
+    window.claimWeeklyChallenge = async function () {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const userRef = ref(db, "users/" + user.uid);
+        const snap = await get(userRef);
+        let data = normalizeData(snap.val());
+        data = normalizeWeekly(data);
+
+        const active = data.weekly.active;
+        if (!active) return;
+
+        const daysPassed = getDaysSince(active.startedAt);
+
+        if (daysPassed < 6 || daysPassed >= 7) {
+            document.getElementById("weeklyMessage").innerText = "You can only claim this on the 7th day.";
+            return;
+        }
+
+        await awardXP(data, {
+            id: active.id,
+            name: active.name,
+            type: "weekly",
+            xp: active.xp
+        });
+
+        const historyId = Date.now().toString();
+
+        data.weekly.history[historyId] = {
+            ...active,
+            status: "claimed",
+            endedAt: getToday(),
+            earnedXp: active.xp
+        };
+
+        data.weekly.active = null;
+
+        await set(userRef, data);
+
+        document.getElementById("rouletteText").innerText = "Ready to spin?";
+        document.getElementById("weeklyMessage").innerText = "+20 XP earned!";
+        updateUI(data);
+        updateWeeklyUI(data);
+        updateTrackingUI(data);
+    };
+
+    window.giveUpWeeklyChallenge = async function () {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const userRef = ref(db, "users/" + user.uid);
+        const snap = await get(userRef);
+        let data = normalizeData(snap.val());
+        data = normalizeWeekly(data);
+
+        const active = data.weekly.active;
+        if (!active) return;
+
+        const daysPassed = getDaysSince(active.startedAt);
+
+        if (daysPassed < 6 || daysPassed >= 7) {
+            document.getElementById("weeklyMessage").innerText = "You can only give up on the 7th day.";
+            return;
+        }
+
+        const historyId = Date.now().toString();
+
+        data.weekly.history[historyId] = {
+            ...active,
+            status: "given_up",
+            endedAt: getToday(),
+            earnedXp: 0
+        };
+
+        data.weekly.active = null;
+
+        await set(userRef, data);
+
+        document.getElementById("rouletteText").innerText = "Ready to spin?";
+        document.getElementById("weeklyMessage").innerText = "Challenge ended with 0 XP.";
+        updateWeeklyUI(data);
+    };
+
+    function makeFitDateId() {
+        return "fitdate_" + Date.now();
+    }
+
+    function cleanText(text) {
+        return String(text || "")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .trim();
+    }
+
+    async function findUserByUsername(username) {
+        const allSnap = await get(ref(db, "users"));
+
+        let result = null;
+
+        allSnap.forEach(child => {
+            const u = child.val();
+
+            if (u.username?.toLowerCase() === username.toLowerCase()) {
+                result = {
+                    uid: child.key,
+                    data: u
+                };
+            }
+        });
+
+        return result;
+    }
+
+    function loadFitDateFriends(data) {
+        const select = document.getElementById("fitDateFriendSelect");
+        if (!select) return;
+
+        select.innerHTML = `<option value="">Choose friend...</option>`;
+
+        (data.friends || []).forEach(friend => {
+            const option = document.createElement("option");
+            option.value = friend;
+            option.innerText = friend;
+            select.appendChild(option);
+        });
+    }
+
+    window.sendFitDateInvite = async function () {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const message = document.getElementById("fitDateMessage");
+        const textInput = document.getElementById("fitDateText");
+        const friendSelect = document.getElementById("fitDateFriendSelect");
+
+        const description = cleanText(textInput.value);
+        const friendUsername = friendSelect.value;
+
+        if (!description) {
+            message.innerText = "Please describe your Fit Date.";
+            return;
+        }
+
+        if (!friendUsername) {
+            message.innerText = "Please choose a friend.";
+            return;
+        }
+
+        const meSnap = await get(ref(db, "users/" + user.uid));
+        let me = normalizeData(meSnap.val());
+
+        const friendResult = await findUserByUsername(friendUsername);
+
+        if (!friendResult) {
+            message.innerText = "Friend not found.";
+            return;
+        }
+
+        let friendData = normalizeData(friendResult.data);
+
+        const id = makeFitDateId();
+
+        const fitDate = {
+            id,
+            description,
+            creator: me.username,
+            partner: friendUsername,
+            participants: {
+                [me.username]: true,
+                [friendUsername]: true
+            },
+            accepted: {
+                [me.username]: true,
+                [friendUsername]: false
+            },
+            claimed: {
+                [me.username]: false,
+                [friendUsername]: false
+            },
+            status: "pending",
+            createdAt: getToday(),
+            xp: 15
+        };
+
+        me.fitDates.active[id] = fitDate;
+        friendData.fitDates.active[id] = fitDate;
+
+        await set(ref(db, "users/" + user.uid), me);
+        await set(ref(db, "users/" + friendResult.uid), friendData);
+
+        textInput.value = "";
+        friendSelect.value = "";
+
+        message.innerText = `Fit Date invite sent to ${friendUsername} ✅`;
+
+        await updateFitDateUI();
+    };
+
+    window.acceptFitDate = async function (fitDateId) {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const meSnap = await get(ref(db, "users/" + user.uid));
+        let me = normalizeData(meSnap.val());
+
+        const fitDate = me.fitDates.active[fitDateId];
+        if (!fitDate) return;
+
+        fitDate.accepted[me.username] = true;
+        fitDate.status = "active";
+
+        const otherUsername = fitDate.creator === me.username ? fitDate.partner : fitDate.creator;
+        const otherResult = await findUserByUsername(otherUsername);
+
+        me.fitDates.active[fitDateId] = fitDate;
+
+        if (otherResult) {
+            let otherData = normalizeData(otherResult.data);
+            otherData.fitDates.active[fitDateId] = fitDate;
+            await set(ref(db, "users/" + otherResult.uid), otherData);
+        }
+
+        await set(ref(db, "users/" + user.uid), me);
+
+        await updateFitDateUI();
+    };
+
+    window.claimFitDate = async function (fitDateId) {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const meSnap = await get(ref(db, "users/" + user.uid));
+        let me = normalizeData(meSnap.val());
+
+        const fitDate = me.fitDates.active[fitDateId];
+        if (!fitDate) return;
+
+        const otherUsername = fitDate.creator === me.username ? fitDate.partner : fitDate.creator;
+        const otherResult = await findUserByUsername(otherUsername);
+        if (!otherResult) return;
+
+        let otherData = normalizeData(otherResult.data);
+
+        fitDate.claimed[me.username] = true;
+
+        me.fitDates.active[fitDateId] = fitDate;
+        otherData.fitDates.active[fitDateId] = fitDate;
+
+        const bothAccepted =
+            fitDate.accepted[fitDate.creator] &&
+            fitDate.accepted[fitDate.partner];
+
+        const bothClaimed =
+            fitDate.claimed[fitDate.creator] &&
+            fitDate.claimed[fitDate.partner];
+
+        if (bothAccepted && bothClaimed) {
+            await awardXP(me, {
+                id: "fit_dates",
+                name: "Fit Dates",
+                type: "fitdate",
+                xp: 15
+            });
+
+            await awardXP(otherData, {
+                id: "fit_dates",
+                name: "Fit Dates",
+                type: "fitdate",
+                xp: 15
+            });
+
+            const finished = {
+                ...fitDate,
+                status: "claimed",
+                endedAt: getToday(),
+                earnedXp: 15
+            };
+
+            me.fitDates.history[fitDateId] = finished;
+            otherData.fitDates.history[fitDateId] = finished;
+
+            delete me.fitDates.active[fitDateId];
+            delete otherData.fitDates.active[fitDateId];
+        }
+
+        await set(ref(db, "users/" + user.uid), me);
+        await set(ref(db, "users/" + otherResult.uid), otherData);
+
+        updateUI(me);
+        updateTrackingUI(me);
+        await updateFitDateUI();
+    };
+
+    window.giveUpFitDate = async function (fitDateId) {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const meSnap = await get(ref(db, "users/" + user.uid));
+        let me = normalizeData(meSnap.val());
+
+        const fitDate = me.fitDates.active[fitDateId];
+        if (!fitDate) return;
+
+        const otherUsername = fitDate.creator === me.username ? fitDate.partner : fitDate.creator;
+        const otherResult = await findUserByUsername(otherUsername);
+
+        const ended = {
+            ...fitDate,
+            status: "given_up",
+            endedAt: getToday(),
+            earnedXp: 0
+        };
+
+        me.fitDates.history[fitDateId] = ended;
+        delete me.fitDates.active[fitDateId];
+
+        if (otherResult) {
+            let otherData = normalizeData(otherResult.data);
+            otherData.fitDates.history[fitDateId] = ended;
+            delete otherData.fitDates.active[fitDateId];
+
+            await set(ref(db, "users/" + otherResult.uid), otherData);
+        }
+
+        await set(ref(db, "users/" + user.uid), me);
+
+        await updateFitDateUI();
+    };
+
+    async function autoExpireFitDate(fitDateId, fitDate, me) {
+        const otherUsername = fitDate.creator === me.username ? fitDate.partner : fitDate.creator;
+        const otherResult = await findUserByUsername(otherUsername);
+
+        const expired = {
+            ...fitDate,
+            status: "auto_give_up",
+            endedAt: getToday(),
+            earnedXp: 0
+        };
+
+        me.fitDates.history[fitDateId] = expired;
+        delete me.fitDates.active[fitDateId];
+
+        if (otherResult) {
+            let otherData = normalizeData(otherResult.data);
+            otherData.fitDates.history[fitDateId] = expired;
+            delete otherData.fitDates.active[fitDateId];
+
+            await set(ref(db, "users/" + otherResult.uid), otherData);
+        }
+    }
+
+    async function updateFitDateUI() {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const list = document.getElementById("fitDateList");
+        if (!list) return;
+
+        const snap = await get(ref(db, "users/" + user.uid));
+        if (!snap.exists()) return;
+
+        let me = normalizeData(snap.val());
+
+        const active = me.fitDates.active || {};
+        const entries = Object.values(active);
+
+        for (const fitDate of entries) {
+            const daysPassed = getDaysSince(fitDate.createdAt);
+
+            if (daysPassed >= 7) {
+                await autoExpireFitDate(fitDate.id, fitDate, me);
+            }
+        }
+
+        await set(ref(db, "users/" + user.uid), me);
+
+        const freshSnap = await get(ref(db, "users/" + user.uid));
+        me = normalizeData(freshSnap.val());
+
+        const freshEntries = Object.values(me.fitDates.active || {});
+
+        if (freshEntries.length === 0) {
+            list.innerHTML = `<p class="fitdate-empty">No active Fit Dates yet.</p>`;
+            return;
+        }
+
+        list.innerHTML = "";
+
+        freshEntries
+            .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+            .forEach(fitDate => {
+                const daysPassed = getDaysSince(fitDate.createdAt);
+                const daysLeft = Math.max(7 - daysPassed, 0);
+
+                const otherUsername = fitDate.creator === me.username ? fitDate.partner : fitDate.creator;
+                const iAccepted = !!fitDate.accepted?.[me.username];
+                const otherAccepted = !!fitDate.accepted?.[otherUsername];
+                const iClaimed = !!fitDate.claimed?.[me.username];
+                const otherClaimed = !!fitDate.claimed?.[otherUsername];
+
+                const card = document.createElement("div");
+                card.className = "fitdate-card";
+
+                let statusText = "";
+
+                if (!iAccepted) {
+                    statusText = `Invite from ${fitDate.creator}`;
+                } else if (!otherAccepted) {
+                    statusText = `Waiting for ${otherUsername} to accept`;
+                } else if (iClaimed && !otherClaimed) {
+                    statusText = `Waiting for ${otherUsername} to claim`;
+                } else {
+                    statusText = `Active with ${otherUsername}`;
+                }
+
+                card.innerHTML = `
+                    <div class="fitdate-tag">FIT DATE</div>
+
+                    <h3>${fitDate.description}</h3>
+
+                    <p class="fitdate-meta">${statusText}</p>
+                    <p class="fitdate-meta">${daysLeft} day${daysLeft === 1 ? "" : "s"} left</p>
+                    <p class="fitdate-xp">+15 XP each</p>
+
+                    <div class="fitdate-actions">
+                        ${
+                            !iAccepted
+                            ? `<button onclick="acceptFitDate('${fitDate.id}')">Accept</button>`
+                            : `<button onclick="claimFitDate('${fitDate.id}')" ${iClaimed || !otherAccepted ? "disabled" : ""}>
+                                ${iClaimed ? "Claimed ✓" : "Claim"}
+                            </button>`
+                        }
+
+                        <button class="fitdate-giveup-btn" onclick="giveUpFitDate('${fitDate.id}')">
+                            Give up
+                        </button>
+                    </div>
+                `;
+
+                list.appendChild(card);
+            });
+    }
+
+    function getFutureDate(days) {
+        const date = new Date();
+        date.setDate(date.getDate() + days);
+        return date.toISOString().split("T")[0];
+    }
+
+    function isExpired(dateString) {
+        return new Date(getToday()) > new Date(dateString);
+    }
+
+    function getRewardCategoryLabel(category) {
+        if (category === "small") return "Small";
+        if (category === "medium") return "Medium";
+        if (category === "large") return "Large";
+        return "Reward";
+    }
+
+    function normalizeRewards(data) {
+        data = normalizeData(data);
+
+        const active = data.rewards.active || {};
+
+        Object.keys(active).forEach(id => {
+            const voucher = active[id];
+
+            if (isExpired(voucher.expiresAt)) {
+                data.rewards.history[id] = {
+                    ...voucher,
+                    status: "expired",
+                    endedAt: getToday()
+                };
+
+                delete data.rewards.active[id];
+            }
+        });
+
+        return data;
+    }
+
+    function updateRewardsUI(data) {
+        data = normalizeRewards(data);
+
+        const coinsEl = document.getElementById("userCoins");
+        const availableList = document.getElementById("availableRewardsList");
+        const activeList = document.getElementById("activeVouchersList");
+
+        if (!coinsEl || !availableList || !activeList) return;
+
+        coinsEl.innerText = data.coins || 0;
+
+        const rewards = Object.values(data.rewards.available || {});
+
+        availableList.innerHTML = "";
+
+        if (rewards.length === 0) {
+            availableList.innerHTML = `<p class="reward-empty">No rewards yet.</p>`;
+        } else {
+            rewards
+                .sort((a, b) => a.cost - b.cost)
+                .forEach(reward => {
+                    const canAfford = (data.coins || 0) >= reward.cost;
+
+                    const div = document.createElement("div");
+                    div.className = "reward-card";
+
+                    div.innerHTML = `
+                        <div>
+                            <div class="reward-tag ${reward.category}">
+                                ${getRewardCategoryLabel(reward.category)}
+                            </div>
+
+                            <h3>${reward.name}</h3>
+                            <p>${reward.cost} Coins</p>
+                        </div>
+
+                        <button onclick="confirmRewardPurchase('${reward.id}')" ${canAfford ? "" : "disabled"}>
+                            ${canAfford ? "Redeem" : "Not enough"}
+                        </button>
+                    `;
+
+                    availableList.appendChild(div);
+                });
+        }
+
+        const vouchers = Object.values(data.rewards.active || {});
+
+        activeList.innerHTML = "";
+
+        if (vouchers.length === 0) {
+            activeList.innerHTML = `<p class="reward-empty">No active vouchers.</p>`;
+        } else {
+            vouchers
+                .sort((a, b) => new Date(a.expiresAt) - new Date(b.expiresAt))
+                .forEach(voucher => {
+                    const div = document.createElement("div");
+                    div.className = "voucher-card";
+
+                    div.innerHTML = `
+                        <div class="reward-tag ${voucher.category}">
+                            Active Voucher
+                        </div>
+
+                        <h3>${voucher.name}</h3>
+                        <p>Expires: ${voucher.expiresAt}</p>
+                    `;
+
+                    activeList.appendChild(div);
+                });
+        }
+    }
+
+    window.confirmRewardPurchase = async function (rewardId) {
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const snap = await get(ref(db, "users/" + user.uid));
+    if (!snap.exists()) return;
+
+    const data = normalizeRewards(snap.val());
+    const reward = data.rewards.available[rewardId];
+
+    if (!reward) return;
+
+    const currentCoins = data.coins || 0;
+    const remainingCoins = currentCoins - reward.cost;
+
+    if (remainingCoins < 0) {
+        document.getElementById("rewardMessage").innerText = "Not enough coins.";
+        return;
+    }
+
+    selectedRewardId = rewardId;
+
+    document.getElementById("rewardConfirmName").innerText = reward.name;
+    document.getElementById("rewardConfirmCost").innerText = reward.cost;
+    document.getElementById("rewardCurrentCoins").innerText = currentCoins;
+    document.getElementById("rewardRemainingCoins").innerText = remainingCoins;
+
+    document.getElementById("rewardConfirmModal").classList.add("show");
+};
+
+window.closeRewardModal = function () {
+    selectedRewardId = null;
+    document.getElementById("rewardConfirmModal").classList.remove("show");
+};
+
+window.purchaseSelectedReward = async function () {
+    if (!selectedRewardId) return;
+
+    const user = auth.currentUser;
+    if (!user) return;
+
+    const userRef = ref(db, "users/" + user.uid);
+    const snap = await get(userRef);
+
+    if (!snap.exists()) return;
+
+    let data = normalizeRewards(snap.val());
+    const reward = data.rewards.available[selectedRewardId];
+
+    if (!reward) return;
+
+    if ((data.coins || 0) < reward.cost) {
+        document.getElementById("rewardMessage").innerText = "Not enough coins.";
+        closeRewardModal();
+        return;
+    }
+
+    data.coins -= reward.cost;
+
+    const voucherId = "voucher_" + Date.now();
+
+    data.rewards.active[voucherId] = {
+        id: voucherId,
+        rewardId: reward.id,
+        name: reward.name,
+        category: reward.category,
+        cost: reward.cost,
+        status: "active",
+        createdAt: getToday(),
+        expiresAt: getFutureDate(30)
+    };
+
+    await set(userRef, data);
+
+    closeRewardModal();
+
+    document.getElementById("rewardMessage").innerText =
+        `${reward.name} voucher activated ✅`;
+
+    updateUI(data);
+    updateRewardsUI(data);
+};
+        
+window.openAddRewardModal = function () {
+    const modal = document.getElementById("addRewardModal");
+    const msg = document.getElementById("addRewardMessage");
+
+    if (msg) msg.innerText = "";
+
+    modal.classList.add("show");
+};
+
+window.closeAddRewardModal = function () {
+    const modal = document.getElementById("addRewardModal");
+
+    document.getElementById("customRewardName").value = "";
+    document.getElementById("customRewardCategory").value = "small";
+
+    const msg = document.getElementById("addRewardMessage");
+    if (msg) msg.innerText = "";
+
+    modal.classList.remove("show");
+};
+
+    window.addCustomReward = async function () {
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const nameInput = document.getElementById("customRewardName");
+        const categoryInput = document.getElementById("customRewardCategory");
+        const message = document.getElementById("addRewardMessage");
+
+        const name = cleanText(nameInput.value);
+        const category = categoryInput.value;
+        const cost = REWARD_CATEGORY_COSTS[category];
+
+        if (!name) {
+            message.innerText = "Please enter a reward name.";
+            return;
+        }
+
+        const userRef = ref(db, "users/" + user.uid);
+        const snap = await get(userRef);
+
+        if (!snap.exists()) return;
+
+        let data = normalizeRewards(snap.val());
+
+        const rewardId = "custom_reward_" + Date.now();
+
+        data.rewards.available[rewardId] = {
+            id: rewardId,
+            name,
+            category,
+            cost,
+            custom: true
+        };
+
+        await set(userRef, data);
+
+        nameInput.value = "";
+        categoryInput.value = "small";
+
+        message.innerText = "Custom reward added ✅";
+
+        document.getElementById("rewardMessage").innerText = "Custom reward added ✅";
+
+        setTimeout(() => {
+            closeAddRewardModal();
+        }, 500);
+
+        updateRewardsUI(data);
+    };
+
+    window.sendFriendRequest = async function (username) {
+        console.log("sendFriendRequest clicked:", username);
+
+        try {
+            const user = auth.currentUser;
+
+            if (!user) {
+                searchResults.innerHTML = "<p>You must be logged in.</p>";
+                return;
+            }
+
+            const meSnap = await get(ref(db, "users/" + user.uid));
+
+            if (!meSnap.exists()) {
+                searchResults.innerHTML = "<p>Your user profile was not found.</p>";
+                return;
+            }
+
+            const me = meSnap.val();
+
+            if (me.username === username) {
+                searchResults.innerHTML = "<p>You cannot add yourself.</p>";
+                return;
+            }
+
+            const allSnap = await get(ref(db, "users"));
+
+            let targetUid = null;
+            let targetUser = null;
+
+            allSnap.forEach(child => {
+                const u = child.val();
+
+                if (u.username?.toLowerCase() === username.toLowerCase()) {
+                    targetUid = child.key;
+                    targetUser = u;
+                }
+            });
+
+            if (!targetUid || !targetUser) {
+                searchResults.innerHTML = "<p>User not found.</p>";
+                return;
+            }
+
+            await set(
+                ref(db, "users/" + targetUid + "/friendRequests/received/" + me.username),
+                true
+            );
+
+            await set(
+                ref(db, "users/" + user.uid + "/friendRequests/sent/" + username),
+                true
+            );
+
+            searchResults.innerHTML = `<p>Friend request sent to ${username} ✅</p>`;
+
+        } catch (e) {
+            console.error("SEND FRIEND REQUEST ERROR:", e);
+            searchResults.innerHTML = `<p>Error: ${e.message}</p>`;
+        }
+    };
+
+
+    function loadFriendData(data) {
+        // FRIEND REQUESTS
+        const reqDiv = document.getElementById("friendRequests");
+        reqDiv.innerHTML = "";
+
+        const received = data.friendRequests?.received || {};
+
+        Object.keys(received).forEach(username => {
+        const div = document.createElement("div");
+
+        div.innerHTML = `
+            <p>${username} sent you a request</p>
+            <button onclick="acceptFriend('${username}')">Accept</button>
+        `;
+
+        reqDiv.appendChild(div);
+        });
+
+        // FRIEND LIST
+        const list = document.getElementById("friendsList");
+        list.innerHTML = "";
+
+        (data.friends || []).forEach(f => {
+            const div = document.createElement("div");
+
+            const isTracking = data.tracking === f;
+
+            div.className = "friend-card";
+
+            div.innerHTML = `
+            <div class="friend-main">
+                <div class="friend-name">${f}</div>
+            </div>
+
+            <div class="friend-actions">
+                <button class="profile-btn-small" onclick="viewProfile('${f}')">Profile</button>
+
+                <button 
+                class="track-btn ${isTracking ? "tracking" : ""}" 
+                onclick="trackFriend('${f}')"
+                >
+                ${isTracking ? "Tracking ✓" : "Track"}
+                </button>
+            </div>
+            `;
+
+            list.appendChild(div);
+        });
+
+        // HOME TRACK UI
+        updateTrackingUI(data);
+        }
+
+        window.acceptFriend = async function (username) {
+        console.log("acceptFriend called:", username);
+
+        const user = auth.currentUser;
+        if (!user) return;
+
+        const meSnap = await get(ref(db, "users/" + user.uid));
+        const me = meSnap.val();
+
+        const allSnap = await get(ref(db, "users"));
+
+        let targetUid = null;
+        let friendData = null;
+
+        allSnap.forEach(child => {
+            const u = child.val();
+
+            if (u.username.toLowerCase() === username.toLowerCase()) {
+                targetUid = child.key;
+                friendData = u;
+            }
+        });
+
+        if (!targetUid) {
+            console.log("Friend not found:", username);
+            return;
+        }
+
+        me.friends = me.friends || [];
+        if (!me.friends.includes(username)) me.friends.push(username);
+
+        friendData.friends = friendData.friends || [];
+        if (!friendData.friends.includes(me.username)) friendData.friends.push(me.username);
+
+        await set(ref(db, "users/" + user.uid + "/friends"), me.friends);
+        await set(ref(db, "users/" + targetUid + "/friends"), friendData.friends);
+
+        await set(ref(db, "users/" + user.uid + "/friendRequests/received/" + username), null);
+        await set(ref(db, "users/" + targetUid + "/friendRequests/sent/" + me.username), null);
+
+        console.log("Friend accepted OK");
+
+        const updated = await get(ref(db, "users/" + user.uid));
+        loadFriendData(updated.val());
+    };
+
+        window.trackFriend = async function (username) {
+            const user = auth.currentUser;
+
+            await set(ref(db, "users/" + user.uid + "/tracking"), username);
+
+            const snap = await get(ref(db, "users/" + user.uid));
+            loadFriendData(snap.val());
+            updateTrackingUI(snap.val());
+        };
+
+        function updateTrackingUI(data) {
+            const container = document.getElementById("trackingBox");
+
+            if (!container) return;
+
+            if (!data.tracking) {
+                container.innerHTML = "You are not tracking any friends...";
+                return;
+            }
+
+            const friendName = data.tracking;
+
+            get(ref(db, "users")).then(snap => {
+                let me = null;
+                let friend = null;
+
+                snap.forEach(child => {
+                    const u = child.val();
+
+                    if (child.key === auth.currentUser.uid) me = u;
+                    if (u.username === friendName) friend = u;
+                });
+
+                if (!me || !friend) return;
+
+                const max = Math.max(me.xp, friend.xp, 1);
+
+                const mePercent = (me.xp / max) * 100;
+                const friendPercent = (friend.xp / max) * 100;
+
+                const diff = me.xp - friend.xp;
+
+                container.innerHTML = `
+                <div class="track-title">
+                    Tracking: <span>${friendName}</span>
+                </div>
+
+                    <div  class="bar-label">You</div>
+                    <div class="bar">
+                        <div class="bar-fill bar-me" style="width:${mePercent}%"></div>
+                    </div>
+
+                    <div  class="bar-label">${friendName}</div>
+                    <div class="bar">
+                        <div class="bar-fill bar-friend" style="width:${friendPercent}%"></div>
+                    </div>
+
+                    <div class="xp-diff">
+                    ${
+                        diff >= 0
+                        ? `You are ahead by ${diff} XP`
+                        : `${friendName} is ahead by ${Math.abs(diff)} XP`
+                    }
+                    </div>
+
+                    <button class="stop-track-btn" onclick="stopTracking()">
+                        Stop tracking
+                    </button>
+                `;
+            });
+        }
+
+        window.stopTracking = async function () {
+            const user = auth.currentUser;
+
+            await set(ref(db, "users/" + user.uid + "/tracking"), null);
+
+            const snap = await get(ref(db, "users/" + user.uid));
+            updateTrackingUI(snap.val());
+        };
+
+        async function compareXP(friendUsername) {
+
+            const snap = await get(ref(db, "users"));
+            let me = null;
+            let friend = null;
+
+            snap.forEach(child => {
+            const u = child.val();
+
+            if (u.username === friendUsername) friend = u;
+            if (u.username === auth.currentUser.displayName || u.email === auth.currentUser.email) me = u;
+            });
+
+            if (!friend || !me) return;
+
+            const diff = me.xp - friend.xp;
+
+            const container = document.getElementById("trackingBox");
+
+            container.innerHTML += `
+            <p>${diff >= 0 
+                ? "You are ahead by " + diff + " XP" 
+                : "You are behind by " + Math.abs(diff) + " XP"}
+            </p>
+            `;
+        }
+
+        function renderXPBreakdown(userData) {
+            const container = document.getElementById("modalXPBreakdown");
+
+            if (!container) return;
+
+            const stats = userData.xpStats || {};
+            const entries = Object.values(stats);
+
+            if (entries.length === 0) {
+                container.innerHTML = "<p>No XP stats yet.</p>";
+                return;
+            }
+
+            container.innerHTML = "";
+
+            entries
+                .sort((a, b) => (b.earned - b.spent) - (a.earned - a.spent))
+                .forEach(stat => {
+                    const net = (stat.earned || 0) - (stat.spent || 0);
+
+                    const div = document.createElement("div");
+                    div.className = "xp-breakdown-row";
+
+                    div.innerHTML = `
+                        <div>
+                            <strong>${stat.name}</strong>
+                            <p>${stat.type}</p>
+                        </div>
+
+                        <div>
+                            ${net >= 0 ? "+" : ""}${net} XP
+                        </div>
+                    `;
+
+                    container.appendChild(div);
+                });
+        }
+
+        window.viewProfile = async function(username) {
+            const snap = await get(ref(db, "users"));
+
+            let found = null;
+
+            snap.forEach(child => {
+                const u = child.val();
+                if (u.username === username) found = u;
+            });
+
+            if (!found) return;
+
+            document.getElementById("modalUsername").innerText = found.username;
+            document.getElementById("modalXP").innerText = found.xp;
+
+            document.getElementById("modalLevel").innerText = getLevelInfo(found.xp || 0).level;
+            document.getElementById("modalStreak").innerText = found.streak || 0;
+
+            renderXPBreakdown(found);
+
+            document.getElementById("profileModal").classList.add("show");
+        };
+
+        window.closeProfile = function () {
+            document.getElementById("profileModal").classList.remove("show");
+        };
+
+        document.getElementById("profileModal").addEventListener("click", (e) => {
+            if (e.target.id === "profileModal") {
+                closeProfile();
+            }
+        });
+
+        window.openAddWeeklyModal = function () {
+            document.getElementById("customWeeklyName").value = "";
+            document.getElementById("addWeeklyMessage").innerText = "";
+
+            document.getElementById("addWeeklyModal").classList.add("show");
+        };
+
+        window.closeAddWeeklyModal = function () {
+            document.getElementById("customWeeklyName").value = "";
+            document.getElementById("addWeeklyMessage").innerText = "";
+
+            document.getElementById("addWeeklyModal").classList.remove("show");
+        };
+
+        window.addCustomWeeklyChallenge = async function () {
+            const user = auth.currentUser;
+            if (!user) return;
+
+            const input = document.getElementById("customWeeklyName");
+            const message = document.getElementById("addWeeklyMessage");
+
+            const name = cleanText(input.value);
+
+            if (!name) {
+                message.innerText = "Please enter a weekly challenge name.";
+                return;
+            }
+
+            const userRef = ref(db, "users/" + user.uid);
+            const snap = await get(userRef);
+
+            if (!snap.exists()) return;
+
+            let data = normalizeData(snap.val());
+
+            const id = "custom_weekly_" + Date.now();
+
+            data.customWeekly[id] = {
+                id,
+                name,
+                xp: 20,
+                custom: true
+            };
+
+            await set(userRef, data);
+
+            message.innerText = "Weekly challenge added ✅";
+
+            setTimeout(() => {
+                closeAddWeeklyModal();
+            }, 500);
+        };
+
+        window.openWeeklyPoolModal = async function () {
+            const user = auth.currentUser;
+            if (!user) return;
+
+            const snap = await get(ref(db, "users/" + user.uid));
+            if (!snap.exists()) return;
+
+            const data = normalizeData(snap.val());
+            const pool = getWeeklyChallengePool(data);
+
+            const list = document.getElementById("weeklyPoolList");
+            list.innerHTML = "";
+
+            pool.forEach(challenge => {
+                const row = document.createElement("div");
+                row.className = "weekly-pool-row";
+
+                row.innerHTML = `
+                    <div>
+                        <strong>${challenge.name}</strong>
+                        <p>${challenge.custom ? "Custom" : "Default"} · +20 XP</p>
+                    </div>
+                `;
+
+                list.appendChild(row);
+            });
+
+            document.getElementById("weeklyPoolModal").classList.add("show");
+        };
+
+        window.closeWeeklyPoolModal = function () {
+            document.getElementById("weeklyPoolModal").classList.remove("show");
+        };
+
+  </script>
+</head>
+
+<body>
+
+  <div class="container">
+
+    <div id="registerBox" class="card">
+
+        <h1>Couple Quest 💕</h1>
+      
+        <input id="usernameInput" placeholder="Username">
+        <input id="emailInput" placeholder="Email">
+        <input id="passInput" type="password" placeholder="Password">
+      
+        <button onclick="register()">Register</button>
+      
+        <p id="msg"></p>
+      
+        <p class="switch-auth">
+          Already have an account?
+          <a href="#" onclick="showLogin()">Login</a>
+        </p>
+      
+      </div>
+      
+      
+      <div id="loginBox" class="card" style="display:none;">
+      
+        <h1>Welcome back 💕</h1>
+      
+        <input id="loginInput" placeholder="Email or Username">
+        <input id="loginPassInput" type="password" placeholder="Password">
+      
+        <button onclick="login()">Login</button>
+      
+        <p id="loginMsg"></p>
+      
+        <p class="switch-auth">
+          Don't have an account?
+          <a href="#" onclick="showRegister()">Register</a>
+        </p>
+      
+      </div>
+
+    <div id="appBox" class="app hidden">
+
+      <!-- TOP BAR -->
+      <div class="topbar">
+        <div>
+          <h2 class="title">
+            Couple Quest
+            <span class="icon">💪</span>
+          </h2>
+        </div>
+
+        <button class="icon-btn" onclick="logout()">⎋</button>
+      </div>
+
+      <!-- TOP TABS (HORIZONTAL SCROLL) -->
+      <div class="top-nav">
+        <div class="tabs">
+            <button class="tab active" onclick="openTab('home')" data-tab="home">Home</button>
+            <button class="tab" onclick="openTab('daily')" data-tab="daily">Daily</button>
+            <button class="tab" onclick="openTab('weekly')" data-tab="weekly">Weekly</button>
+            <button class="tab" onclick="openTab('friends')" data-tab="friends">
+                Friends <span id="friendsBadge" class="tab-badge hidden">!</span>
+            </button>
+            <button class="tab" onclick="openTab('fitdate')" data-tab="fitdate">
+                Fit Date <span id="fitDateBadge" class="tab-badge hidden">!</span>
+            </button>
+            <button class="tab" onclick="openTab('rewards')" data-tab="rewards">Rewards</button>
+        </div>
+      </div>
+
+      <div id="tab-home" class="tab-page">
+        <!-- HERO XP CARD -->
+        <div class="hero-card">
+
+            <div class="xp-label">TOTAL</div>
+
+            <div class="xp-number" id="userXP">0</div>
+
+            <div class="xp-sub">XP earned</div>
+
+            <div class="progress-bar">
+            <div class="progress-fill" id="progressFill"></div>
+            </div>
+
+            <div class="xp-text" id="xpText">0 / 500 XP</div>
+            <div class="level-text" id="levelText">LEVEL 1</div>
+
+        </div>
+
+        <div class="stats">
+
+            <div class="stat">
+            <h3 id="streak">0</h3>
+            <p class="streak-label">
+                Streak <span class="fire">🔥</span>
+              </p>
+            </div>
+
+            <div class="stat profile-btn" onclick="openProfile()">
+            <h3>👤</h3>
+            <p id="profileName">Profile</p>
+            </div>
+
+        </div>
+
+        <div id="trackingBox">
+            You are not tracking any friends...
+          </div>
+       </div>
+
+       <div id="tab-daily" class="tab-page hidden">
+
+        <div class="daily-header-row">
+            <div>
+              <h3>Daily Challenges</h3>
+              <p>Create your own daily habits</p>
+            </div>
+          
+            <button class="add-daily-btn" onclick="openAddDailyModal()">
+              + Add Daily
+            </button>
+        </div>
+
+        <div class="daily-list">
+
+            <div class="challenge-row">
+              <div class="challenge-info">
+                <h3>10 000 Steps</h3>
+                <p>+2 XP</p>
+              </div>
+              <button id="stepsBtn" onclick="claim('steps',2,'10000 Steps')">Claim</button>
+            </div>
+          
+            <div class="challenge-row">
+              <div class="challenge-info">
+                <h3>Gym Workout</h3>
+                <p>+3 XP</p>
+              </div>
+              <button id="gymBtn" onclick="claim('gym',3,'Gym Workout')">Claim</button>
+            </div>
+          
+            <div class="challenge-row">
+              <div class="challenge-info">
+                <h3>Home Workout</h3>
+                <p>+1 XP</p>
+              </div>
+              <button id="homeBtn" onclick="claim('home',1,'Home Workout')">Claim</button>
+            </div>
+          
+            <div class="challenge-row">
+              <div class="challenge-info">
+                <h3>2L Water</h3>
+                <p>+1 XP</p>
+              </div>
+              <button id="waterBtn" onclick="claim('water', 1, '2L Water')">Claim</button>
+            </div>
+          
+            <div class="challenge-row">
+              <div class="challenge-info">
+                <h3>No Sweets</h3>
+                <p>+2 XP</p>
+              </div>
+              <button id="sweetsBtn" onclick="claim('sweets',2,'No Sweets')">Claim</button>
+            </div>
+          
+            <div class="challenge-row">
+              <div class="challenge-info">
+                <h3>7 Hours Sleep</h3>
+                <p>+2 XP</p>
+              </div>
+              <button id="sleepBtn" onclick="claim('sleep',2,'7 Hours Sleep')">Claim</button>
+            </div>
+          
+          </div>
+
+          <div id="customDailyList" class="daily-list"></div>
+      
+      </div>
+
+      <div id="tab-weekly" class="tab-page hidden">
+
+        <div class="weekly-roulette-card">
+          <h3>Weekly Roulette 🎰</h3>
+          <p class="weekly-subtitle">Spin to get your weekly challenge</p>
+      
+          <div id="weeklyRoulette" class="roulette-wheel">
+            <span id="rouletteText">Ready to spin?</span>
+          </div>
+      
+          <button id="spinWeeklyBtn" onclick="spinWeeklyChallenge()">Spin</button>
+          <button id="rerollWeeklyBtn" class="reroll-btn hidden" onclick="rerollWeeklyChallenge()">Reroll -5 XP</button>
+      
+          <p id="weeklyMessage"></p>
+        </div>
+        
+        <div class="weekly-tools-row">
+            <div>
+              <h3>Weekly Pool</h3>
+              <p>Manage challenges that can appear in roulette</p>
+            </div>
+          
+            <div class="weekly-tools-actions">
+              <button onclick="openWeeklyPoolModal()">View Pool</button>
+              <button onclick="openAddWeeklyModal()">+ Add</button>
+            </div>
+        </div>
+
+        <div id="weeklyChallengeBox"></div>
+      
+      </div>
+
+      <div id="tab-friends" class="tab-page hidden">
+
+        <h3>Search Users</h3>
+      
+        <input id="friendSearchInput" placeholder="Search username...">
+        <button onclick="searchUser()">Search</button>
+      
+        <div id="searchResults"></div>
+      
+        <hr>
+      
+        <h3>Friend Requests</h3>
+        <div id="friendRequests"></div>
+      
+        <hr>
+      
+        <h3>Your Friends</h3>
+        <div id="friendsList"></div>
+      
+      </div>
+
+      <div id="tab-fitdate" class="tab-page hidden">
+
+        <div class="fitdate-create-card">
+          <h3>Plan a Fit Date 💕</h3>
+          <p class="fitdate-subtitle">Invite a friend to complete an active date together.</p>
+      
+          <textarea id="fitDateText" placeholder="Example: Sunday morning walk, hiking, tennis, bike ride..."></textarea>
+      
+          <select id="fitDateFriendSelect">
+            <option value="">Choose friend...</option>
+          </select>
+      
+          <button onclick="sendFitDateInvite()">Send Invite</button>
+      
+          <p id="fitDateMessage"></p>
+        </div>
+      
+        <h3 class="fitdate-section-title">Your Fit Dates</h3>
+        <div id="fitDateList"></div>
+      
+      </div>
+
+      <div id="tab-rewards" class="tab-page hidden">
+
+        <div class="rewards-wallet-card">
+          <div>
+            <p class="wallet-label">Your Coins</p>
+            <h2><span id="userCoins">0</span> 🪙</h2>
+          </div>
+          <p class="wallet-subtitle">Earn coins by earning XP. Spend them on rewards.</p>
+        </div>
+
+        <div class="rewards-header-row">
+            <h3 class="reward-section-title">Available Rewards</h3>
+          
+            <button class="add-reward-btn" onclick="openAddRewardModal()">
+              + Add Reward
+            </button>
+          </div>
+          
+        <p id="rewardMessage"></p>
+          
+        <div id="availableRewardsList"></div>
+
+        <h3 class="reward-section-title">Active Vouchers</h3>
+        <div id="activeVouchersList"></div>
+      
+      </div>
+
+      <!-- PROFILE MODAL -->
+    <div id="profileModal" class="modal hidden">
+        <div class="modal-content">
+    
+        <button class="close-btn" onclick="closeProfile()">✕</button>
+    
+        <h2 id="modalUsername">Username</h2>
+    
+        <div class="modal-stats">
+            <p><strong>XP:</strong> <span id="modalXP">0</span></p>
+            <p><strong>Level:</strong> <span id="modalLevel">1</span></p>
+            <p><strong>Streak:</strong> <span id="modalStreak">0</span> 🔥</p>
+        </div>
+        <div class="modal-divider"></div>
+        <h3>XP Breakdown</h3>
+        <div id="modalXPBreakdown"></div>
+
+        </div>
+    </div>
+
+    <div id="rewardConfirmModal" class="modal hidden">
+
+        <div class="modal-content">
+      
+          <button class="close-btn" onclick="closeRewardModal()">✕</button>
+      
+          <h2>Redeem Reward</h2>
+      
+          <div class="modal-divider"></div>
+      
+          <p id="rewardConfirmName"></p>
+      
+          <p>
+            Cost:
+            <strong id="rewardConfirmCost"></strong>
+            🪙
+          </p>
+      
+          <p>
+            Current Coins:
+            <strong id="rewardCurrentCoins"></strong>
+          </p>
+      
+          <p>
+            Coins After Purchase:
+            <strong id="rewardRemainingCoins"></strong>
+          </p>
+      
+          <div class="reward-confirm-actions">
+      
+            <button
+              class="reward-cancel-btn"
+              onclick="closeRewardModal()"
+            >
+              Cancel
+            </button>
+      
+            <button
+              class="reward-confirm-btn"
+              onclick="purchaseSelectedReward()"
+            >
+              Confirm
+            </button>
+      
+          </div>
+      
+        </div>
+      
+      </div>
+
+      <div id="addRewardModal" class="modal hidden">
+
+        <div class="modal-content">
+      
+          <button class="close-btn" onclick="closeAddRewardModal()">✕</button>
+      
+          <h2>Add Custom Reward</h2>
+      
+          <div class="modal-divider"></div>
+      
+          <input id="customRewardName" class="modal-input" placeholder="Reward name...">
+      
+          <select id="customRewardCategory" class="modal-select">
+            <option value="small">Small - 75 Coins</option>
+            <option value="medium">Medium - 150 Coins</option>
+            <option value="large">Large - 250 Coins</option>
+          </select>
+      
+          <button class="modal-main-btn" onclick="addCustomReward()">
+            Add Reward
+          </button>
+      
+          <p id="addRewardMessage"></p>
+      
+        </div>
+      
+      </div>
+
+      <div id="addDailyModal" class="modal hidden">
+
+        <div class="modal-content">
+      
+          <button class="close-btn" onclick="closeAddDailyModal()">✕</button>
+      
+          <h2>Add Daily Challenge</h2>
+      
+          <div class="modal-divider"></div>
+      
+          <input id="customDailyName" class="modal-input" placeholder="Challenge name...">
+      
+          <select id="customDailyDifficulty" class="modal-select">
+            <option value="small">Small (+1 XP)</option>
+            <option value="medium">Medium (+2 XP)</option>
+            <option value="hard">Hard (+3 XP)</option>
+          </select>
+      
+          <button class="modal-main-btn" onclick="addCustomDailyChallenge()">
+            Add Challenge
+          </button>
+      
+          <p id="addDailyMessage"></p>
+      
+        </div>
+      
+      </div>
+
+      <div id="addWeeklyModal" class="modal hidden">
+
+        <div class="modal-content">
+      
+          <button class="close-btn" onclick="closeAddWeeklyModal()">✕</button>
+      
+          <h2>Add Weekly Challenge</h2>
+      
+          <div class="modal-divider"></div>
+      
+          <input id="customWeeklyName" class="modal-input" placeholder="Challenge name...">
+      
+          <p class="modal-helper-text">
+            Custom weekly challenges always give +20 XP.
+          </p>
+      
+          <button class="modal-main-btn" onclick="addCustomWeeklyChallenge()">
+            Add Challenge
+          </button>
+      
+          <p id="addWeeklyMessage"></p>
+      
+        </div>
+      
+      </div>
+
+      <div id="weeklyPoolModal" class="modal hidden">
+
+        <div class="modal-content">
+      
+          <button class="close-btn" onclick="closeWeeklyPoolModal()">✕</button>
+      
+          <h2>Available Weekly Challenges</h2>
+      
+          <div class="modal-divider"></div>
+      
+          <div id="weeklyPoolList"></div>
+      
+        </div>
+      
+      </div>
+
+    </div>
+
+  </div>
+
+</body>
+</html>
